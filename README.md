@@ -18,7 +18,6 @@
 |---|---|
 | 輸入 | 單張或多張道路圖片（`.jpg` / `.png` / `.bmp`） |
 | 輸出 | 道路區域以顏色標示的結果圖片（`result_原檔名.png`） |
-| 道路類型判斷 | 自動區分柏油路（橘色）與砂石路（紫色） |
 | 命令列支援 | 可直接指定圖片，或自動掃描當前目錄 |
 
 ### 規格需求
@@ -42,28 +41,22 @@ graph TD
 
     ROOT --> SEG["語意分割"]
     ROOT --> POST["道路遮罩後處理"]
-    ROOT --> CLS["紋理分類"]
+    ROOT --> CLS["道路標示"]
     ROOT --> OUT["輸出結果"]
 
     SEG --> S1["SegFormer-B2\nCityscapes 預訓練"]
-    SEG --> S2["取出 class 0\n(road)"]
-    SEG --> S3["排除上方 35%\n(排除遠景誤判)"]
+    SEG --> S2["取出 class 0 road"]
+    SEG --> S3["排除上方 35%\n排除遠景誤判"]
 
     POST --> P1["形態學閉運算\n填補道路遮罩破洞"]
     POST --> P2["形態學開運算\n去除邊緣雜訊"]
     POST --> P3["最大連通分量\n只保留主要道路"]
-    POST --> P4["Monotonic Taper\n單調收窄 模擬透視消失點"]
+    POST --> P4["Monotonic Taper\n單調收窄，模擬透視消失點"]
 
-    CLS --> C1["lv_ratio\n細/粗局部方差比（主要）"]
-    CLS --> C2["Sobel 邊緣密度（輔助）"]
-    CLS --> C3["Laplacian 標準差（輔助）"]
-    CLS --> C4["平均亮度（輔助）"]
-    CLS --> C5{"lv_ratio >= 0.876?"}
-    C5 -->|Yes| G["GRAVEL 砂石路\n紫色"]
-    C5 -->|No|  A["ASPHALT 柏油路\n橘色"]
+    CLS --> C1["道路區域疊色（橘色）"]
 
     OUT --> O1["道路區域疊色\n其餘保留原圖"]
-    OUT --> O2["儲存 result_原檔名.png"]
+    OUT --> O2["儲存result_原檔名.png"]
 ```
 
 ---
@@ -110,22 +103,11 @@ graph TD
 
 ---
 
-#### `classify_surface` — 紋理分類（lv_ratio）
-
-| | |
-|---|---|
-| **WHAT** | 從道路區域提取四個紋理特徵，以加權分數判斷路面類型為柏油路或砂石路。 |
-| **WHY** | SegFormer 的 road class 不區分路面材質；柏油路表面均勻細密，砂石路粗糙不均，可透過紋理特徵區分。 |
-| **HOW** | 計算 `lv_ratio = mean(local_var_5) / mean(local_var_15)`（細粒度局部方差 / 粗粒度局部方差），`lv_ratio ≥ 0.876` 判定為砂石路；以 Sobel 邊緣密度（25%）、Laplacian 標準差（25%）、平均亮度（15%）作為輔助特徵計算 confidence score。 |
-
----
-
-#### 顏色對照表
+#### 顏色
 
 | 類型 | 顏色 | RGB |
 |---|---|---|
 | 柏油路（Asphalt） | 橘色 | (255, 120, 30) |
-| 砂石路（Gravel） | 紫色 | (160, 40, 200) |
 
 ---
 
@@ -135,19 +117,14 @@ graph TD
 
 ```mermaid
 flowchart TD
-    START([讀取圖片]) --> EXIF["EXIF 旋轉校正\nImageOps.exif_transpose"]
-    EXIF --> SEG["SegFormer-B2 語意分割\nnvidia/segformer-b2-finetuned-cityscapes-1024-1024"]
-    SEG --> MASK["取出 class 0 road 遮罩\n排除上方 35%"]
-    MASK --> MORPH["形態學後處理\nClose(11x11) + Open(11x11)"]
+    START([讀取圖片]) --> EXIF["EXIF旋轉校正\nImageOps.exif_transpose"]
+    EXIF --> SEG["SegFormer-B2語意分割\nnvidia/segformer-b2-finetuned-cityscapes-1024-1024"]
+    SEG --> MASK["取出class 0 road遮罩\n排除上方35%"]
+    MASK --> MORPH["形態學後處理\nClose(11x11)+Open(11x11)"]
     MORPH --> CC["最大連通分量\nlargest_cc"]
-    CC --> TAPER["Monotonic Taper\n單調收窄視覺遮罩"]
-    TAPER --> TEX["紋理特徵提取\nlv_ratio / Sobel / Laplacian / 亮度"]
-    TEX --> THR{"lv_ratio >= 0.876?"}
-    THR -->|Yes| GRAVEL["GRAVEL 砂石路"]
-    THR -->|No|  ASPHALT["ASPHALT 柏油路"]
-    GRAVEL --> BLEND["道路區域疊色\nalpha=0.55"]
-    ASPHALT --> BLEND
-    BLEND --> SAVE["儲存 result_原檔名.png"]
+    CC --> TAPER["MonotonicTaper\n單調收窄視覺遮罩"]
+    TAPER --> BLEND["道路區域疊色（橘色）\nalpha=0.55"]
+    BLEND --> SAVE["儲存result_原檔名.png"]
     SAVE --> END([完成])
 ```
 
@@ -160,7 +137,6 @@ flowchart TD
 | `monotonic_taper(road_mask, upper_cut)` | 道路 bool mask | 收窄後的視覺 bool mask |
 | `morph_clean(mask, k)` | uint8 mask | 形態學清理後的 uint8 mask |
 | `largest_cc(mask_u8)` | uint8 mask | 只保留最大連通分量的 uint8 mask |
-| `classify_surface(rgb, mask)` | RGB 圖, bool mask | `(label, score, feats_dict)` |
 | `process(path, proc, model, dev)` | 圖片路徑 | 儲存結果圖片、顯示並排圖 |
 
 ---
@@ -209,7 +185,6 @@ python 影像辨識_抓馬路.py
 
 | 參數 | 位置 | 預設值 | 說明 |
 |---|---|---|---|
-| `LV_THR` | 頂部常數 | `0.876` | lv_ratio 判斷閾值，調高→更難判定為砂石路 |
 | `upper` | `process()` | `H * 0.35` | 排除上方比例，調高→忽略更多遠景 |
 | `k`（morph） | `process()` | `11` | 形態學 kernel 大小，調大→遮罩更平滑但可能過度填充 |
 | `alpha`（疊色） | `process()` | `0.55` | 道路顏色透明度，調高→顏色越深 |
@@ -220,6 +195,4 @@ python 影像辨識_抓馬路.py
 | 道路沒被抓到 | 降低 `upper`（改為 `H * 0.25`），擴大道路搜尋範圍 |
 | 遠景被誤判為道路 | 提高 `upper`（改為 `H * 0.45`） |
 | 遮罩破碎不完整 | 提高 morph `k`（改為 13 或 15） |
-| 明明是柏油路卻判成砂石路 | 降低 `LV_THR`（改為 0.80） |
-| 明明是砂石路卻判成柏油路 | 提高 `LV_THR`（改為 0.92） |
 | 道路邊緣不自然截斷 | 調整 `smooth`（`monotonic_taper` 的 smooth 參數調高至 0.4） |
