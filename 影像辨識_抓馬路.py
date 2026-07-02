@@ -12,13 +12,9 @@ import warnings
 warnings.filterwarnings("ignore")
 
 # ── 道路顏色 ──────────────────────────────────────────────────
-ROAD_COLOR = {
-    "asphalt": (255, 120,  30),   # 橘色
-    "gravel":  (160,  40, 200),   # 紫色
-}
+ROAD_COLOR = (255, 120, 30)   # 橘色（柏油路）
 
 CS_ROAD = [0]    # Cityscapes class 0 = road
-LV_THR  = 0.876  # lv_ratio 閾值：>= gravel，< asphalt
 
 
 # ============================================================
@@ -108,46 +104,6 @@ def monotonic_taper(road_mask, upper_cut, smooth=0.25):
     return result & road_mask
 
 
-# ============================================================
-# 紋理分類（lv_ratio 為主）
-# ============================================================
-
-def local_var_map(g, w):
-    mu  = cv2.boxFilter(g, -1, (w, w))
-    mu2 = cv2.boxFilter(g * g, -1, (w, w))
-    return np.sqrt(np.maximum(mu2 - mu * mu, 0.0))
-
-def classify_surface(rgb, mask):
-    if mask.sum() < 200:
-        return "unknown", 0.5, {}
-
-    gray = cv2.cvtColor(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
-                        cv2.COLOR_BGR2GRAY).astype(np.float32)
-    ys, xs = np.where(mask)
-    roi = gray[ys.min():ys.max()+1, xs.min():xs.max()+1]
-    rm  = mask[ys.min():ys.max()+1, xs.min():xs.max()+1]
-
-    lv5  = local_var_map(roi,  5)[rm].mean()
-    lv15 = local_var_map(roi, 15)[rm].mean()
-    lv_r = float(lv5 / (lv15 + 1e-8))
-
-    sx   = cv2.Sobel(roi, cv2.CV_32F, 1, 0, ksize=3)
-    sy   = cv2.Sobel(roi, cv2.CV_32F, 0, 1, ksize=3)
-    edge = float(np.sqrt(sx**2 + sy**2)[rm].mean())
-    lap  = float(cv2.Laplacian(roi, cv2.CV_32F)[rm].std())
-    mi   = float(gray[mask].mean())
-
-    score = (0.35 * float(np.clip((lv_r - 0.750) / 0.200, 0, 1)) +
-             0.25 * float(np.clip((edge -  60.0)  / 200.0, 0, 1)) +
-             0.25 * float(np.clip((lap  -  30.0)  / 100.0, 0, 1)) +
-             0.15 * float(np.clip((mi   -  90.0)  / 100.0, 0, 1)))
-
-    if lv_r >= LV_THR:
-        label, score = "gravel",  max(score, 0.50)
-    else:
-        label, score = "asphalt", min(score, 0.49)
-
-    return label, float(score), {"lv_ratio": lv_r, "edge": edge, "lap": lap, "mean_i": mi}
 
 
 # ============================================================
@@ -173,16 +129,10 @@ def process(path, proc, model, dev):
     # 視覺遮罩（單調收窄）
     road_vis = monotonic_taper(road_m, upper)
 
-    # 紋理分類
-    label, score, feats = classify_surface(rgb, road_m)
-    conf = score if label == "gravel" else 1 - score
-    print(f"  lv_ratio={feats.get('lv_ratio', 0):.4f}  ->  {label.upper()} {conf:.0%}")
-
-    # 道路區域疊色，其餘保留原圖
+    # 道路區域疊色（柏油路，橘色）
     out   = rgb.copy().astype(np.float32)
-    color = np.array(ROAD_COLOR.get(label, ROAD_COLOR["asphalt"]), dtype=np.float32)
     alpha = 0.55
-    out[road_vis] = out[road_vis] * (1 - alpha) + color * alpha
+    out[road_vis] = out[road_vis] * (1 - alpha) + np.array(ROAD_COLOR, dtype=np.float32) * alpha
     out = out.astype(np.uint8)
 
     # 儲存：result_原檔名
@@ -195,12 +145,11 @@ def process(path, proc, model, dev):
     # 顯示（原圖 + 結果 並排）
     fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     axes[0].imshow(rgb);  axes[0].set_title("原圖",  fontsize=13); axes[0].axis("off")
-    axes[1].imshow(out);  axes[1].set_title(f"{label.upper()}  {conf:.0%}", fontsize=13)
+    axes[1].imshow(out);  axes[1].set_title("ASPHALT", fontsize=13)
     axes[1].axis("off")
 
-    patches = [mpatches.Patch(color=[c/255 for c in ROAD_COLOR[k]], label=k.capitalize())
-               for k in ("asphalt", "gravel")]
-    fig.legend(handles=patches, loc="lower center", ncol=2, fontsize=11,
+    patches = [mpatches.Patch(color=[c/255 for c in ROAD_COLOR], label="Asphalt")]
+    fig.legend(handles=patches, loc="lower center", ncol=1, fontsize=11,
                bbox_to_anchor=(0.5, 0.0))
     plt.tight_layout()
     plt.savefig(out_name, dpi=130, bbox_inches="tight")
